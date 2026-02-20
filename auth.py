@@ -58,7 +58,8 @@ def validate_username(username: str) -> Tuple[bool, str]:
     return True, ""
 
 
-def register_user(username: str, email: str, password: str) -> Tuple[bool, str, Optional[int]]:
+def register_user(username: str, email: str, password: str, 
+                  security_question: str = None, security_answer: str = None) -> Tuple[bool, str, Optional[int]]:
     """
     Register a new user
     Returns: (success, message, user_id)
@@ -77,13 +78,22 @@ def register_user(username: str, email: str, password: str) -> Tuple[bool, str, 
     if not is_valid:
         return False, error, None
     
+    # Validate security question (if provided)
+    security_answer_hash = None
+    if security_question and security_answer:
+        if len(security_answer) < 3:
+            return False, "Security answer must be at least 3 characters", None
+        security_answer_hash = hash_password(security_answer.lower().strip())
+    elif security_question or security_answer:
+        return False, "Both security question and answer are required", None
+    
     # Check if email already exists
     if get_user_by_email(email):
         return False, "Email already registered", None
     
     # Hash password and create user
     password_hash = hash_password(password)
-    user_id = create_user(username, email, password_hash)
+    user_id = create_user(username, email, password_hash, security_question, security_answer_hash)
     
     if user_id:
         return True, "Registration successful", user_id
@@ -120,3 +130,24 @@ def authenticate_user(email: str, password: str) -> Tuple[bool, str, Optional[di
 def check_user_exists(email: str) -> bool:
     """Check if a user with the given email exists"""
     return get_user_by_email(email) is not None
+
+
+def verify_security_answer(email: str, answer: str) -> bool:
+    """Verify security answer for an email"""
+    user = get_user_by_email(email)
+    if not user or not user.get('security_answer_hash'):
+        return False
+    
+    return verify_password(answer.lower().strip(), user['security_answer_hash'])
+
+
+def reset_password(email: str, new_password: str) -> bool:
+    """Reset password for a user"""
+    from database import update_password
+    
+    is_valid, _ = validate_password(new_password)
+    if not is_valid:
+        return False
+        
+    new_hash = hash_password(new_password)
+    return update_password(email, new_hash)

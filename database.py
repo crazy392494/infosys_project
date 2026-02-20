@@ -29,9 +29,18 @@ def initialize_database():
             username TEXT NOT NULL,
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
+            security_question TEXT,
+            security_answer_hash TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Migration for existing users (if any)
+    try:
+        cursor.execute('ALTER TABLE users ADD COLUMN security_question TEXT')
+        cursor.execute('ALTER TABLE users ADD COLUMN security_answer_hash TEXT')
+    except sqlite3.OperationalError:
+        pass  # Columns already exist
     
     # Resumes table
     cursor.execute('''
@@ -109,21 +118,42 @@ def initialize_database():
 
 # ==================== USER OPERATIONS ====================
 
-def create_user(username: str, email: str, password_hash: str) -> Optional[int]:
+def create_user(username: str, email: str, password_hash: str, 
+                security_question: str = None, security_answer_hash: str = None) -> Optional[int]:
     """Create a new user and return user ID"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
-            (username, email, password_hash)
+            '''INSERT INTO users (username, email, password_hash, security_question, security_answer_hash) 
+               VALUES (?, ?, ?, ?, ?)''',
+            (username, email, password_hash, security_question, security_answer_hash)
         )
         conn.commit()
         user_id = cursor.lastrowid
         conn.close()
         return user_id
     except sqlite3.IntegrityError:
+        return user_id
+    except sqlite3.IntegrityError:
         return None
+
+
+def update_password(email: str, new_password_hash: str) -> bool:
+    """Update user password"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE users SET password_hash = ? WHERE email = ?',
+            (new_password_hash, email)
+        )
+        conn.commit()
+        updated = cursor.rowcount > 0
+        conn.close()
+        return updated
+    except Exception:
+        return False
 
 
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
