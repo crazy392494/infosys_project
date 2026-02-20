@@ -100,27 +100,32 @@ SESSION_TIMEOUT_MINUTES = 60
 
 # AI Configuration (Google Gemini)
 # Get your free API key from: https://aistudio.google.com/app/apikey
-# Set as environment variable: GEMINI_API_KEY=your_key_here
-# Or uncomment and add your key below (not recommended for production)
-# GEMINI_API_KEY = "your-api-key-here"
-
-# AI Features will automatically fall back to basic analysis if API key not configured
+try:
+    import streamlit as st
+    GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv('GEMINI_API_KEY', ''))
+except ImportError:
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 
 # Job Search API Configuration (Adzuna)
 # Get your free API credentials from: https://developer.adzuna.com/
-# 1,000 calls/month free tier
-# Set as environment variables:
-#   ADZUNA_APP_ID=your_app_id
-#   ADZUNA_API_KEY=your_api_key
-ADZUNA_APP_ID = os.getenv('ADZUNA_APP_ID', '')
-ADZUNA_APP_ID = os.getenv('ADZUNA_APP_ID', '')
-ADZUNA_API_KEY = os.getenv('ADZUNA_API_KEY', '')
+try:
+    import streamlit as st
+    ADZUNA_APP_ID = st.secrets.get("ADZUNA_APP_ID", os.getenv('ADZUNA_APP_ID', ''))
+    ADZUNA_API_KEY = st.secrets.get("ADZUNA_API_KEY", os.getenv('ADZUNA_API_KEY', ''))
+except ImportError:
+    ADZUNA_APP_ID = os.getenv('ADZUNA_APP_ID', '')
+    ADZUNA_API_KEY = os.getenv('ADZUNA_API_KEY', '')
 
 # RapidAPI Configuration (for Job Search Global)
 # Get your key from: https://rapidapi.com/PrineshPatel/api/job-search-global
 # You can provide multiple keys separated by commas for fallback (e.g. "key1,key2")
-RAPIDAPI_KEY = os.getenv('RAPIDAPI_KEY', '')
-JOB_SEARCH_GLOBAL_HOST = os.getenv('JOB_SEARCH_GLOBAL_HOST', 'job-search-global.p.rapidapi.com')
+try:
+    import streamlit as st
+    RAPIDAPI_KEY = st.secrets.get("RAPIDAPI_KEY", os.getenv('RAPIDAPI_KEY', ''))
+    JOB_SEARCH_GLOBAL_HOST = st.secrets.get("JOB_SEARCH_GLOBAL_HOST", os.getenv('JOB_SEARCH_GLOBAL_HOST', 'job-search-global.p.rapidapi.com'))
+except ImportError:
+    RAPIDAPI_KEY = os.getenv('RAPIDAPI_KEY', '')
+    JOB_SEARCH_GLOBAL_HOST = os.getenv('JOB_SEARCH_GLOBAL_HOST', 'job-search-global.p.rapidapi.com')
 
 # Job search defaults
 DEFAULT_COUNTRY = 'us'  # Change to your country code (us, gb, in, etc.)

@@ -119,9 +119,7 @@ class JobSearchGlobalProvider(BaseJobSearch):
         env_keys = RAPIDAPI_KEY.split(',') if RAPIDAPI_KEY else []
         self.api_keys = [k.strip() for k in env_keys if k.strip()]
         
-        # Fallback key for testing if none provided
-        if not self.api_keys:
-            self.api_keys = ["db72a492d5mshee54c5f3acf06aap1bd121jsn3dadf64fa3a3"]
+        # No hardcoded fallback key — set RAPIDAPI_KEY env variable or add to .streamlit/secrets.toml
             
         self.host = JOB_SEARCH_GLOBAL_HOST
         self.is_configured = bool(self.api_keys and self.host)

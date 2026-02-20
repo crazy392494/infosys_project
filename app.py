@@ -580,15 +580,15 @@ def show_login_page():
         """, unsafe_allow_html=True)
         
         # Tabs for Login and Register
-        tab1, tab2 = st.tabs(["Login", "Register"])
+        tab1, tab2, tab3 = st.tabs(["Login", "Register", "Forgot Password"])
         
         # Login Tab
         with tab1:
             st.markdown("<br>", unsafe_allow_html=True)
             
             with st.form("login_form"):
-                email = st.text_input("Email Address", placeholder="your.email@example.com")
-                password = st.text_input("Password", type="password", placeholder="Enter your password")
+                email = st.text_input("Email Address", placeholder="your.email@example.com", key="login_email")
+                password = st.text_input("Password", type="password", placeholder="Enter your password", key="login_password")
                 submit = st.form_submit_button("Login", use_container_width=True)
                 
                 if submit:
@@ -605,30 +605,114 @@ def show_login_page():
                             st.rerun()
                         else:
                             st.error(f"{message}")
-        
+
         # Register Tab
         with tab2:
             st.markdown("<br>", unsafe_allow_html=True)
             
             with st.form("register_form"):
-                username = st.text_input("Username", placeholder="johndoe")
-                email = st.text_input("Email Address", placeholder="your.email@example.com")
-                password = st.text_input("Password", type="password", placeholder="Minimum 6 characters")
-                confirm_password = st.text_input("Confirm Password", type="password", placeholder="Re-enter password")
-                submit = st.form_submit_button("Create Account", use_container_width=True)
+                new_username = st.text_input("Username", placeholder="Choose a username", key="reg_username")
+                new_email = st.text_input("Email Address", placeholder="your.email@example.com", key="reg_email")
+                new_password = st.text_input("Password", type="password", placeholder="Choose a strong password", key="reg_password")
+                confirm_password = st.text_input("Confirm Password", type="password", placeholder="Confirm your password", key="reg_confirm")
                 
-                if submit:
-                    if not all([username, email, password, confirm_password]):
-                        st.error(" Please fill in all fields")
-                    elif password != confirm_password:
-                        st.error(" Passwords do not match")
+                st.markdown("---")
+                st.markdown("**Account Recovery Security**")
+                security_q = st.selectbox(
+                    "Security Question",
+                    [
+                        "What is your mother's maiden name?",
+                        "What was the name of your first pet?",
+                        "What city were you born in?",
+                        "What was your childhood nickname?",
+                        "What is your favorite food?"
+                    ],
+                    key="reg_sec_q"
+                )
+                security_a = st.text_input("Security Answer", placeholder="Answer to recover account", key="reg_sec_a")
+                
+                submit_reg = st.form_submit_button("Create Account", use_container_width=True)
+                
+                if submit_reg:
+                    if not new_username or not new_email or not new_password:
+                        st.error("Please fill in all required fields")
+                    elif new_password != confirm_password:
+                        st.error("Passwords do not match")
+                    elif not security_a:
+                        st.error("Please provide a security answer for account recovery")
                     else:
-                        success, message, user_id = register_user(username, email, password)
+                        success, message, user_id = register_user(
+                            new_username, new_email, new_password, 
+                            security_question=security_q, security_answer=security_a
+                        )
                         
                         if success:
-                            st.success(f"{message}! Please login to continue.")
+                            st.success(f"{message}! Please login.")
                         else:
-                            st.error(f" {message}")
+                            st.error(f"{message}")
+
+        # Forgot Password Tab
+        with tab3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            if 'reset_stage' not in st.session_state:
+                st.session_state.reset_stage = 1
+                
+            if st.session_state.reset_stage == 1:
+                with st.form("reset_step1"):
+                    reset_email = st.text_input("Enter your email address", key="reset_email")
+                    submit_step1 = st.form_submit_button("Next", use_container_width=True)
+                    
+                    if submit_step1:
+                        user = get_user_by_email(reset_email)
+                        if user and user.get('security_question'):
+                            st.session_state.reset_email_confirmed = reset_email
+                            st.session_state.reset_question = user['security_question']
+                            st.session_state.reset_stage = 2
+                            st.rerun()
+                        elif user:
+                            st.error("Account exists but no security question set. Cannot reset password.")
+                        else:
+                            st.error("Email not found.")
+            
+            elif st.session_state.reset_stage == 2:
+                st.info(f"Security Question: **{st.session_state.reset_question}**")
+                with st.form("reset_step2"):
+                    answer = st.text_input("Your Answer", key="reset_answer")
+                    submit_step2 = st.form_submit_button("Verify Answer", use_container_width=True)
+                    
+                    if submit_step2:
+                        from auth import verify_security_answer
+                        if verify_security_answer(st.session_state.reset_email_confirmed, answer):
+                            st.session_state.reset_stage = 3
+                            st.rerun()
+                        else:
+                            st.error("Incorrect answer.")
+                
+                if st.button("Back"):
+                    st.session_state.reset_stage = 1
+                    st.rerun()
+
+            elif st.session_state.reset_stage == 3:
+                with st.form("reset_step3"):
+                    new_pass = st.text_input("New Password", type="password", key="reset_new_pass")
+                    confirm_pass = st.text_input("Confirm New Password", type="password", key="reset_confirm_pass")
+                    submit_step3 = st.form_submit_button("Reset Password", use_container_width=True)
+                    
+                    if submit_step3:
+                        if new_pass != confirm_pass:
+                            st.error("Passwords do not match")
+                        else:
+                            from auth import reset_password
+                            if reset_password(st.session_state.reset_email_confirmed, new_pass):
+                                st.success("Password reset successful! You can now login.")
+                                st.session_state.reset_stage = 1
+                                if 'reset_email_confirmed' in st.session_state:
+                                    del st.session_state.reset_email_confirmed
+                                if 'reset_question' in st.session_state:
+                                    del st.session_state.reset_question
+                            else:
+                                st.error("Failed to reset password.")
         
         # Footer
         st.markdown("""
@@ -1132,8 +1216,6 @@ def show_analysis_page():
     
     # Suggestions
     render_section_header("Personalized Improvement Suggestions", "")
-    # Suggestions
-    render_section_header("Personalized Improvement Suggestions", "")
     for i, suggestion in enumerate(analysis['suggestions'], 1):
         st.markdown(f"""
         <div style="
@@ -1612,7 +1694,6 @@ def show_resume_builder_page():
     with col_sum_1:
          st.caption("Tip: Write a draft and click 'AI Enhance' to make it professional.")
     
-    # Skills
     # Skills
     render_section_header("Skills", "")
     col1, col2 = st.columns(2)

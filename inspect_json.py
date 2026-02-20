@@ -2,16 +2,22 @@ import requests
 import json
 import sys
 import time
+import os
 
 # Force UTF-8 stdout
 sys.stdout.reconfigure(encoding='utf-8')
 
 url = "https://job-search-global.p.rapidapi.com/latest_jobs.php"
 
+RAPIDAPI_KEY = os.getenv('RAPIDAPI_KEY', '')
+if not RAPIDAPI_KEY:
+    print("ERROR: Set RAPIDAPI_KEY environment variable before running this script.")
+    sys.exit(1)
+
 headers = {
 	"Content-Type": "application/x-www-form-urlencoded",
 	"x-rapidapi-host": "job-search-global.p.rapidapi.com",
-	"x-rapidapi-key": "db72a492d5mshee54c5f3acf06aap1bd121jsn3dadf64fa3a3"
+	"x-rapidapi-key": RAPIDAPI_KEY
 }
 
 print("Sleeping 2s to avoid rate limits...")
