@@ -1317,7 +1317,12 @@ def show_jobs_page():
                 'ZipRecruiter': '#1A73E8',
                 'Dice': '#FB4F14',
                 'CareerBuilder': '#17A2B8',
-                'SimplyHired': '#009688'
+                'SimplyHired': '#009688',
+                'Lever': '#4F46E5',
+                'Greenhouse': '#2ECC71',
+                'Workday': '#E25822',
+                'Ashby': '#7C3AED',
+                'Active Jobs DB': '#06B6D4',
             }
             source_color = source_colors.get(job_source, '#64748B')
             

@@ -14,6 +14,8 @@ from config import (
     ADZUNA_API_KEY, 
     RAPIDAPI_KEY,
     JOB_SEARCH_GLOBAL_HOST,
+    ACTIVE_JOBS_DB_KEY,
+    ACTIVE_JOBS_DB_HOST,
     DEFAULT_COUNTRY, 
     DEFAULT_LOCATION,
     JOBS_PER_PAGE,
@@ -242,24 +244,144 @@ class JobSearchGlobalProvider(BaseJobSearch):
             'easy_apply': False
         }
 
+class ActiveJobsDBProvider(BaseJobSearch):
+    """
+    Active Jobs DB via RapidAPI
+    Endpoint: GET https://active-jobs-db.p.rapidapi.com/modified-ats-24h
+    Returns real-time ATS job postings updated every 24 hours.
+    """
+
+    def __init__(self):
+        self.api_key = ACTIVE_JOBS_DB_KEY
+        self.host    = ACTIVE_JOBS_DB_HOST
+        self.base_url = f"https://{self.host}/modified-ats-24h"
+        self.is_configured = bool(self.api_key)
+
+    def search_jobs(self, keywords: List[str], location: str, max_results: int) -> List[Dict[str, Any]]:
+        if not self.is_configured:
+            return []
+
+        try:
+            headers = {
+                "x-rapidapi-key":  self.api_key,
+                "x-rapidapi-host": self.host,
+            }
+            params = {
+                "limit":            min(max_results * 3, 500),  # fetch extra so we can filter
+                "offset":           0,
+                "description_type": "text",
+            }
+            response = requests.get(self.base_url, headers=headers, params=params, timeout=15)
+
+            if response.status_code != 200:
+                print(f"ActiveJobsDB Error: HTTP {response.status_code}")
+                return []
+
+            data = response.json()
+
+            # API returns a list directly or dict with a key
+            if isinstance(data, list):
+                raw_jobs = data
+            elif isinstance(data, dict):
+                raw_jobs = data.get('data', data.get('jobs', []))
+            else:
+                return []
+
+            # Keyword filter (client-side since API has no keyword filter)
+            kw_lower = [k.lower() for k in keywords]
+            filtered = []
+            for job in raw_jobs:
+                title = (job.get('title') or '').lower()
+                desc  = (job.get('description') or '').lower()
+                if any(k in title or k in desc for k in kw_lower):
+                    filtered.append(job)
+
+            # Fall back to all jobs if nothing matched
+            results = filtered if filtered else raw_jobs
+            return [self._parse_job(j) for j in results[:max_results]]
+
+        except Exception as e:
+            print(f"ActiveJobsDB Error: {e}")
+            return []
+
+    def _parse_job(self, job: Dict) -> Dict[str, Any]:
+        """Normalise an Active Jobs DB job record to the app's common schema."""
+        title   = job.get('title') or job.get('job_title') or 'N/A'
+        company = job.get('company') or job.get('organization') or job.get('company_name') or 'N/A'
+        location = (
+            job.get('location') or
+            job.get('job_location') or
+            (', '.join(filter(None, [job.get('city'), job.get('state'), job.get('country')]))) or
+            'Remote'
+        )
+        url = (
+            job.get('url') or
+            job.get('job_url') or
+            job.get('apply_url') or
+            job.get('link') or '#'
+        )
+        date_str = (
+            job.get('date_posted') or
+            job.get('posted_date') or
+            job.get('date') or
+            datetime.now().isoformat()
+        )
+        description = job.get('description') or job.get('summary') or title
+        # Active Jobs DB often gives very long descriptions — trim for display
+        if len(description) > 600:
+            description = description[:597] + '...'
+
+        # Determine source platform from URL
+        source  = 'Active Jobs DB'
+        url_low = url.lower()
+        if 'linkedin'     in url_low: source = 'LinkedIn'
+        elif 'indeed'     in url_low: source = 'Indeed'
+        elif 'glassdoor'  in url_low: source = 'Glassdoor'
+        elif 'ziprecruiter' in url_low: source = 'ZipRecruiter'
+        elif 'lever.co'   in url_low: source = 'Lever'
+        elif 'greenhouse' in url_low: source = 'Greenhouse'
+        elif 'workday'    in url_low: source = 'Workday'
+        elif 'ashby'      in url_low: source = 'Ashby'
+
+        return {
+            'title':         title,
+            'company':       company,
+            'location':      location,
+            'description':   description,
+            'salary':        job.get('salary') or job.get('salary_range') or 'See job post',
+            'url':           url,
+            'posted_date':   date_str,
+            'days_ago':      self._calculate_days_ago(date_str),
+            'contract_type': job.get('employment_type') or job.get('job_type') or 'Full-time',
+            'source':        source,
+            'easy_apply':    False,
+        }
+
+
 class JobSearchAPI:
     """Composite Job Search Manager"""
     
     def __init__(self):
         self.providers = []
-        
-        # Job Search Global (Primary)
+
+        # Active Jobs DB (Primary — fresh ATS postings every 24h)
+        active_jobs = ActiveJobsDBProvider()
+        if active_jobs.is_configured:
+            self.providers.append(active_jobs)
+            print("✅ Active Jobs DB provider ready")
+
+        # Job Search Global (Secondary)
         global_search = JobSearchGlobalProvider()
         if global_search.is_configured:
             self.providers.append(global_search)
-        
+
         # Adzuna (Fallback)
         adzuna = AdzunaJobSearch()
         if adzuna.is_configured:
             self.providers.append(adzuna)
-            
+
         self.is_configured = len(self.providers) > 0
-        
+
         if not self.is_configured:
             print("⚠️ No job search APIs configured. Using mock data.")
 

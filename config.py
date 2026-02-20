@@ -127,6 +127,16 @@ except ImportError:
     RAPIDAPI_KEY = os.getenv('RAPIDAPI_KEY', '')
     JOB_SEARCH_GLOBAL_HOST = os.getenv('JOB_SEARCH_GLOBAL_HOST', 'job-search-global.p.rapidapi.com')
 
+# Active Jobs DB Configuration (RapidAPI)
+# Endpoint: https://active-jobs-db.p.rapidapi.com/modified-ats-24h
+try:
+    import streamlit as st
+    ACTIVE_JOBS_DB_KEY = st.secrets.get("ACTIVE_JOBS_DB_KEY", os.getenv('ACTIVE_JOBS_DB_KEY', ''))
+except ImportError:
+    ACTIVE_JOBS_DB_KEY = os.getenv('ACTIVE_JOBS_DB_KEY', '')
+
+ACTIVE_JOBS_DB_HOST = 'active-jobs-db.p.rapidapi.com'
+
 # Job search defaults
 DEFAULT_COUNTRY = 'us'  # Change to your country code (us, gb, in, etc.)
 DEFAULT_LOCATION = 'remote'  # Default search location
