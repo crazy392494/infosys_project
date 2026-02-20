@@ -134,8 +134,8 @@ def create_user(username: str, email: str, password_hash: str,
         conn.close()
         return user_id
     except sqlite3.IntegrityError:
-        return user_id
-    except sqlite3.IntegrityError:
+        return None
+    except Exception:
         return None
 
 
