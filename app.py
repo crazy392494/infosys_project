@@ -1598,71 +1598,13 @@ def show_resume_builder_page():
             <div>
                 <h3 style="color: #E2E8F0; margin: 0; font-weight: 700;">Build Your Professional Resume</h3>
                 <p style="color: #94A3B8; margin: 4px 0 0 0; font-size: 0.92em;">
-                    Fill in your details below. We've pre-filled information from your uploaded resume.
+                    Fill in your details below to generate a professional resume.
                 </p>
             </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
     
-    # Pre-fill data from resume if available
-    if 'rb_prefilled' not in st.session_state:
-        from ai_service import get_ai_analyzer
-        resume = get_latest_resume(user['id'])
-        if resume:
-            try:
-                ai_analyzer = get_ai_analyzer()
-                # Use new full extraction method
-                full_data = ai_analyzer.extract_resume_details(resume['original_text'])
-                
-                # Fallback to regex-based extraction if AI returns empty
-                if not full_data:
-                    from resume_analyzer import extract_resume_details_fallback
-                    full_data = extract_resume_details_fallback(resume['original_text'])
-                
-                if full_data:
-                    # Contact Info
-                    contact = full_data.get('contact', {})
-                    st.session_state.rb_name = contact.get('name', user.get('username', ''))
-                    st.session_state.rb_email = contact.get('email', user.get('email', ''))
-                    st.session_state.rb_phone = contact.get('phone', '')
-                    st.session_state.rb_location = contact.get('location', '')
-                    
-                    # Summary
-                    summary_text = full_data.get('summary', '')
-                    if summary_text:
-                        st.session_state.rb_summary = summary_text
-                    
-                    # Experience
-                    experiences = full_data.get('experience', [])
-                    st.session_state.rb_exp_count = len(experiences) if experiences else 1
-                    for i, exp in enumerate(experiences):
-                        st.session_state[f"rb_exp_comp_{i}"] = exp.get('company', '')
-                        st.session_state[f"rb_exp_role_{i}"] = exp.get('role', '')
-                        st.session_state[f"rb_exp_dur_{i}"] = exp.get('duration', '')
-                        st.session_state[f"rb_exp_desc_{i}"] = exp.get('description', '')
-
-                    # Education
-                    education = full_data.get('education', [])
-                    st.session_state.rb_edu_count = len(education) if education else 1
-                    for i, edu in enumerate(education):
-                        st.session_state[f"rb_edu_inst_{i}"] = edu.get('institution', '')
-                        st.session_state[f"rb_edu_deg_{i}"] = edu.get('degree', '')
-                        st.session_state[f"rb_edu_year_{i}"] = edu.get('year', '')
-                    
-                    # Projects
-                    projects = full_data.get('projects', [])
-                    st.session_state.rb_proj_count = len(projects) if projects else 1
-                    for i, proj in enumerate(projects):
-                        st.session_state[f"rb_proj_name_{i}"] = proj.get('name', '')
-                        st.session_state[f"rb_proj_tech_{i}"] = proj.get('technologies', '')
-                        st.session_state[f"rb_proj_desc_{i}"] = proj.get('description', '')
-
-                    st.toast("Resume data extracted successfully!", icon="✅")
-            except Exception as e:
-                print(f"Error pre-filling resume data: {e}")
-        
-        st.session_state.rb_prefilled = True
     
     # ---- Profile Form ----
     render_section_header("Personal Information", "")
