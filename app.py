@@ -115,20 +115,23 @@ st.markdown("""
     /* Hide broken Material Icons / arrow text in Expanders */
     .streamlit-expanderHeader .material-symbols-rounded,
     [data-testid="stExpanderToggleIcon"],
-    [data-testid="stExpander"] .material-symbols-rounded {
+    [data-testid="stExpander"] svg {
         display: none !important;
         visibility: hidden !important;
-        width: 0 !important;
-        font-size: 0 !important;
-        color: transparent !important;
-        overflow: hidden !important;
-        max-width: 0 !important;
-        max-height: 0 !important;
     }
-    /* Catch raw icon text rendered as strings */
-    .streamlit-expanderHeader p::before,
-    [data-testid="stExpanderToggleIcon"] + * {
-        content: none !important;
+    
+    /* Catch and hide raw ligature text like 'arrow_right' */
+    .streamlit-expanderHeader p:contains("arrow_right"),
+    .streamlit-expanderHeader span:contains("arrow_right"),
+    [data-testid="stExpanderToggleIcon"]::after,
+    [data-testid="stExpanderToggleIcon"]::before {
+        display: none !important;
+        content: "" !important;
+    }
+    
+    /* Global fix for Streamlit's new Material Symbols leak */
+    .st-emotion-cache-12w0qpk, .st-emotion-cache-10fha31, .st-emotion-cache-ue6ba6 {
+        display: none !important;
     }
 
     .main .block-container {
