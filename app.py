@@ -22,6 +22,76 @@ from components import (
     render_alert, render_skills_chart, render_progress_bar, render_glow_card
 )
 from config import APP_TITLE, APP_ICON, MAX_FILE_SIZE_MB, ALLOWED_EXTENSIONS
+import requests as _requests
+import re as _re
+import html as _html_mod
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_job_from_source(url: str) -> dict:
+    """
+    Fetch real job posting from any URL via Jina Reader and parse:
+      - company: exact company name as shown on the posting
+      - description: first 2-3 meaningful sentences of the job description
+      - content: full raw text (trimmed)
+    Works on LinkedIn, Greenhouse, Workday, Lever, direct company sites.
+    """
+    # Navigation/boilerplate words to skip when parsing content
+    _NAV_NOISE = {
+        'linkedin', 'sign in', 'join now', 'skip to main content',
+        'clear text', 'jobs', 'search', 'home', 'notifications',
+        'messaging', 'me', 'post a job', 'find a job',
+        'easy apply', 'save', 'show more', 'show less',
+        'follow', 'report', 'share', 'dismiss', 'cookie policy',
+        'privacy policy', 'terms of service', 'copyright',
+    }
+    try:
+        jina_url = f"https://r.jina.ai/{url}"
+        headers  = {
+            "Accept":          "text/plain",
+            "User-Agent":      "Mozilla/5.0 (compatible; CareerPlatform/1.0)",
+            "X-Return-Format": "text",
+        }
+        resp = _requests.get(jina_url, headers=headers, timeout=20)
+        if resp.status_code != 200:
+            return {"title": "", "company": "", "description": "", "content": "", "error": f"HTTP {resp.status_code}"}
+
+        text    = resp.text.strip()
+        content = text[:8000] + ("\n\n[Content trimmed…]" if len(text) > 8000 else "")
+
+        # Filter out noise lines — keep lines that are real content
+        all_lines = [l.strip() for l in text.splitlines() if l.strip()]
+        clean = [
+            l for l in all_lines
+            if len(l) > 3
+            and l.lower() not in _NAV_NOISE
+            and not l.startswith('http')
+            and not l.startswith('#')
+            and len(l) < 200          # skip huge blobs that are really one long line
+        ]
+
+        # Structure for LinkedIn / ATS pages:
+        #   clean[0] → job title  (e.g. "Senior Angular Engineer")
+        #   clean[1] → company    (e.g. "Netlify")
+        #   clean[2] → location / meta
+        #   clean[3+] → description body
+        job_title   = clean[0] if len(clean) > 0 else "Job Posting"
+        company     = clean[1] if len(clean) > 1 else ""
+        # Description: skip location/meta lines (usually short), grab first substantive sentences
+        desc_lines  = [l for l in clean[2:] if len(l) > 40][:4]
+        description = " ".join(desc_lines)
+        if len(description) > 280:
+            description = description[:280].rstrip() + "…"
+
+        return {
+            "title":       job_title,
+            "company":     company,
+            "description": description,
+            "content":     content,
+            "error":       None,
+        }
+    except Exception as e:
+        return {"title": "", "company": "", "description": "", "content": "", "error": str(e)}
+
 
 # Page configuration
 st.set_page_config(
@@ -42,7 +112,7 @@ st.markdown("""
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     }
 
-    /* Hide broken Material Icons in Expanders */
+    /* Hide broken Material Icons / arrow text in Expanders */
     .streamlit-expanderHeader .material-symbols-rounded,
     [data-testid="stExpanderToggleIcon"],
     [data-testid="stExpander"] .material-symbols-rounded {
@@ -50,6 +120,15 @@ st.markdown("""
         visibility: hidden !important;
         width: 0 !important;
         font-size: 0 !important;
+        color: transparent !important;
+        overflow: hidden !important;
+        max-width: 0 !important;
+        max-height: 0 !important;
+    }
+    /* Catch raw icon text rendered as strings */
+    .streamlit-expanderHeader p::before,
+    [data-testid="stExpanderToggleIcon"] + * {
+        content: none !important;
     }
 
     .main .block-container {
@@ -1043,52 +1122,58 @@ def show_upload_page():
             
             st.success("Analysis complete!")
             
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            # Results preview
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown(render_metric_card(
-                    "Resume Score",
-                    f"{analysis_results['score']}/100",
-                    "",
-                    "#7C3AED"
-                ), unsafe_allow_html=True)
-                st.markdown(render_metric_card(
-                    "Technical Skills Found",
-                    str(len(analysis_results['technical_skills'])),
-                    "",
-                    "#06B6D4"
-                ), unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown(render_metric_card(
-                    "Soft Skills Found",
-                    str(len(analysis_results['soft_skills'])),
-                    "",
-                    "#10B981"
-                ), unsafe_allow_html=True)
-                st.markdown(render_metric_card(
-                    "Improvement Areas",
-                    str(len(analysis_results['weaknesses'])),
-                    "",
-                    "#F59E0B"
-                ), unsafe_allow_html=True)
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("📊 View Full Analysis", use_container_width=True, type="primary", key="upload_view_analysis"):
-                    st.session_state.page = 'analysis'
-                    st.rerun()
-            
-            with col2:
-                if st.button("🚀 Improve with AI Builder", use_container_width=True, key="upload_go_builder"):
-                    st.session_state.page = 'resume_builder'
-                    st.rerun()
+            # ✅ Store results in session_state so the panel below persists on reruns
+            st.session_state['last_upload_analysis'] = analysis_results
+
+    # --- Results Panel ---
+    # Rendered OUTSIDE the button block so it survives reruns when navigation buttons are clicked
+    analysis_results = st.session_state.get('last_upload_analysis')
+    if analysis_results:
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown(render_metric_card(
+                "Resume Score",
+                f"{analysis_results['score']}/100",
+                "",
+                "#7C3AED"
+            ), unsafe_allow_html=True)
+            st.markdown(render_metric_card(
+                "Technical Skills Found",
+                str(len(analysis_results['technical_skills'])),
+                "",
+                "#06B6D4"
+            ), unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown(render_metric_card(
+                "Soft Skills Found",
+                str(len(analysis_results['soft_skills'])),
+                "",
+                "#10B981"
+            ), unsafe_allow_html=True)
+            st.markdown(render_metric_card(
+                "Improvement Areas",
+                str(len(analysis_results['weaknesses'])),
+                "",
+                "#F59E0B"
+            ), unsafe_allow_html=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("📊 View Full Analysis", use_container_width=True, type="primary", key="upload_view_analysis"):
+                st.session_state.page = 'analysis'
+                st.rerun()
+        
+        with col2:
+            if st.button("🚀 Improve with AI Builder", use_container_width=True, key="upload_go_builder"):
+                st.session_state.page = 'resume_builder'
+                st.rerun()
 
 
 def show_analysis_page():
@@ -1251,6 +1336,165 @@ def show_jobs_page():
     
     render_header(user['username'], "Job Recommendations")
     
+    # ── LinkedIn Live Search Panel ──────────────────────────────────────────
+    st.markdown(
+        '<div style="background:linear-gradient(135deg,rgba(10,102,194,0.18),rgba(37,99,235,0.1));'
+        'border:1px solid rgba(10,102,194,0.4);border-radius:16px;padding:20px 24px;margin-bottom:24px;">'
+        '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">'
+        '<span style="font-size:1.8em;">🔵</span>'
+        '<div>'
+        '<strong style="color:#60A5FA;font-size:1.05em;">Search LinkedIn Jobs Directly</strong>'
+        '<p style="color:#94A3B8;margin:3px 0 0 0;font-size:0.85em;">'
+        'Type a specific role to fetch live postings from LinkedIn and see full details here'
+        '</p></div></div>',
+        unsafe_allow_html=True
+    )
+
+    search_col1, search_col2, search_col3 = st.columns([3, 2, 1])
+    with search_col1:
+        li_role = st.text_input(
+            "Job Role", placeholder="e.g. Senior Angular Engineer, Data Scientist…",
+            key="li_search_role", label_visibility="collapsed"
+        )
+    with search_col2:
+        li_location = st.text_input(
+            "Location", placeholder="e.g. Remote, New York, India…",
+            key="li_search_location", label_visibility="collapsed"
+        )
+    with search_col3:
+        li_search_clicked = st.button("🔍 Search", key="li_search_btn", use_container_width=True, type="primary")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Run JobSpy search when button clicked
+    if li_search_clicked and li_role.strip():
+        with st.spinner(f"🔵 Searching LinkedIn for **{li_role.strip()}**…"):
+            try:
+                from jobspy import scrape_jobs
+                import pandas as pd
+
+                df = scrape_jobs(
+                    site_name=["linkedin"],
+                    search_term=li_role.strip(),
+                    location=li_location.strip() or "Remote",
+                    results_wanted=10,
+                    hours_old=72,
+                    country_indeed="USA",
+                )
+                st.session_state['linkedin_search_results'] = df
+                st.session_state['linkedin_search_role']    = li_role.strip()
+            except Exception as e:
+                st.session_state['linkedin_search_results'] = None
+                st.session_state['linkedin_search_error']   = str(e)
+
+    # Display LinkedIn search results (persists across reruns)
+    import html as _html
+    if 'linkedin_search_results' in st.session_state:
+        df_results = st.session_state.get('linkedin_search_results')
+        searched_role = st.session_state.get('linkedin_search_role', '')
+
+        if df_results is None:
+            err = st.session_state.get('linkedin_search_error', 'Unknown error')
+            st.warning(f"⚠️ LinkedIn search failed: {err}")
+        elif len(df_results) == 0:
+            st.info(f"No LinkedIn results found for **{searched_role}**. Try a different role or location.")
+        else:
+            st.markdown(
+                f'<div style="background:rgba(10,102,194,0.1);border-left:4px solid #0A66C2;'
+                f'border-radius:10px;padding:12px 18px;margin-bottom:18px;">'
+                f'<strong style="color:#60A5FA;">✦ {len(df_results)} LinkedIn jobs found for "{searched_role}"</strong>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+            for idx, row in df_results.iterrows():
+                title_s    = str(row.get('title', 'N/A'))
+                company_s  = str(row.get('company', 'N/A'))
+                location_s = str(row.get('location', 'Remote'))
+                salary_s   = str(row.get('min_amount', '') or '') 
+                if salary_s and str(row.get('max_amount', '')):
+                    currency = str(row.get('currency', 'USD'))
+                    salary_s = f"{currency} {int(float(salary_s)):,} – {int(float(str(row.get('max_amount','0')))):,}"
+                elif not salary_s:
+                    salary_s = 'See post'
+                job_type_s = str(row.get('job_type', 'Full-time') or 'Full-time')
+                desc_raw   = str(row.get('description', '') or '')
+                desc_safe  = _html.escape(desc_raw[:400] + '…' if len(desc_raw) > 400 else desc_raw)
+                job_url    = str(row.get('job_url', '') or '')
+                posted     = row.get('date_posted', '')
+                if posted and str(posted) not in ('nan', 'None', ''):
+                    try:
+                        from datetime import date
+                        days_diff = (date.today() - pd.to_datetime(posted).date()).days
+                        posted_s  = 'Today' if days_diff == 0 else f'{days_diff}d ago'
+                    except:
+                        posted_s = str(posted)
+                else:
+                    posted_s = 'Recent'
+
+                card = (
+                    '<div style="background:rgba(20,30,50,0.82);backdrop-filter:blur(20px);'
+                    'border:1px solid rgba(10,102,194,0.25);border-left:4px solid #0A66C2;'
+                    'border-radius:16px;padding:22px 24px;margin-bottom:16px;'
+                    'box-shadow:0 4px 20px rgba(0,0,0,0.2);">'
+
+                    # Header row
+                    f'<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:8px;">'
+                    f'<div style="flex:1;min-width:0;">'
+                    f'<h3 style="margin:0 0 3px 0;color:#93C5FD;font-size:1.12em;font-weight:800;">{_html.escape(title_s)}</h3>'
+                    f'<p style="margin:0;color:#E2E8F0;font-size:0.93em;font-weight:600;">{_html.escape(company_s)}</p>'
+                    f'</div>'
+                    f'<span style="background:rgba(10,102,194,0.2);color:#60A5FA;padding:5px 14px;'
+                    f'border-radius:20px;font-size:0.8em;font-weight:700;border:1px solid rgba(10,102,194,0.4);">'
+                    f'🔵 LinkedIn</span>'
+                    f'</div>'
+
+                    # Meta row
+                    f'<div style="display:flex;flex-wrap:wrap;gap:14px;margin-bottom:12px;">'
+                    f'<span style="color:#94A3B8;font-size:0.84em;">📍 {_html.escape(location_s)}</span>'
+                    f'<span style="color:#94A3B8;font-size:0.84em;">💰 {_html.escape(salary_s)}</span>'
+                    f'<span style="color:#94A3B8;font-size:0.84em;">📅 {posted_s}</span>'
+                    f'<span style="color:#94A3B8;font-size:0.84em;">🏢 {_html.escape(job_type_s)}</span>'
+                    f'</div>'
+
+                    # Divider
+                    '<div style="border-top:1px solid rgba(10,102,194,0.15);margin-bottom:12px;"></div>'
+
+                    # Description
+                    f'<div style="background:rgba(10,30,60,0.5);border-radius:10px;padding:12px 16px;">'
+                    f'<p style="color:#64748B;font-size:0.73em;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;margin:0 0 7px 0;">Job Description</p>'
+                    f'<p style="color:#CBD5E1;font-size:0.9em;line-height:1.75;margin:0;">{desc_safe}</p>'
+                    f'</div>'
+                    '</div>'
+                )
+                st.markdown(card, unsafe_allow_html=True)
+
+                # --- Auto-fetch exact company name + description from source ---
+                if job_url:
+                    res = fetch_job_from_source(job_url)
+                    if not res['error']:
+                        real_company = res['company'] or company_s
+                        req_text     = res['description']
+                        st.markdown(
+                            f'<div style="margin:4px 0 10px 0;padding:10px 14px;'
+                            f'background:rgba(10,102,194,0.09);border-left:3px solid #0A66C2;'
+                            f'border-radius:0 8px 8px 0;">'
+                            f'<p style="margin:0 0 4px 0;">'
+                            f'<span style="color:#60A5FA;font-size:0.72em;font-weight:700;'
+                            f'text-transform:uppercase;letter-spacing:0.6px;">Company: </span>'
+                            f'<span style="color:#E2E8F0;font-size:0.86em;font-weight:600;">'
+                            f'{_html.escape(real_company)}</span></p>'
+                            f'<p style="color:#CBD5E1;font-size:0.84em;line-height:1.65;margin:0;">'
+                            f'{_html.escape(req_text)}</p></div>',
+                            unsafe_allow_html=True
+                        )
+                    st.link_button("View Job on LinkedIn", job_url, type="primary")
+
+                st.markdown("<div style='margin-bottom:8px;'></div>", unsafe_allow_html=True)
+
+            st.markdown("---")
+
+    # ── Existing resume-matched recommendations ─────────────────────────────
     # Get recommendations
     with st.spinner("🔍 Finding the best job matches for you..."):
         recommendations = get_job_recommendations(user['id'], limit=15)
@@ -1262,154 +1506,213 @@ def show_jobs_page():
             st.rerun()
         return
     
-    # Results summary
+    # Results summary banner
+    live_count = sum(1 for r in recommendations if r.get('is_live'))
     st.markdown(f"""
-    <div class="glass-card" style="padding: 18px 24px; margin-bottom: 24px;">
-        <div style="display: flex; align-items: center; gap: 12px;">
-            <span style="font-size: 1.5em;"></span>
+    <div style="
+        background: linear-gradient(135deg, rgba(124,58,237,0.15), rgba(37,99,235,0.1));
+        border: 1px solid rgba(124,58,237,0.3);
+        border-radius: 16px;
+        padding: 18px 24px;
+        margin-bottom: 28px;
+    ">
+        <div style="display:flex;align-items:center;gap:14px;">
+            <span style="font-size:2em;">🎯</span>
             <div>
-                <strong style="color: #E2E8F0; font-size: 1.05em;">{len(recommendations)} Matching Opportunities Found</strong>
-                <p style="color: #94A3B8; margin: 4px 0 0 0; font-size: 0.88em;">Jobs are ranked by match percentage based on your skills and experience</p>
+                <strong style="color:#E2E8F0;font-size:1.08em;">{len(recommendations)} Matching Opportunities Found</strong>
+                <p style="color:#94A3B8;margin:4px 0 0 0;font-size:0.88em;">
+                    Ranked by skill match &middot; {live_count} live postings &middot; Based on your resume analysis
+                </p>
             </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
     
     # Display recommendations
-    for rec in recommendations:
-        # Determine badge based on match score
+    import html as _html
+    for i, rec in enumerate(recommendations):
+        # Colour scheme by match score
         if rec['match_score'] >= 70:
-            badge = "Excellent Match"
-            badge_color = "#10B981"
+            badge_color  = "#10B981"
+            badge_text   = "✦ Excellent Match"
+            border_color = "rgba(16,185,129,0.5)"
         elif rec['match_score'] >= 50:
-            badge = "Good Match"
-            badge_color = "#F59E0B"
+            badge_color  = "#F59E0B"
+            badge_text   = "◈ Good Match"
+            border_color = "rgba(245,158,11,0.4)"
         else:
-            badge = "Potential Match"
-            badge_color = "#64748B"
-        
-        # Match bar color
-        if rec['match_score'] >= 70:
-            bar_glow = "rgba(16, 185, 129, 0.3)"
-        elif rec['match_score'] >= 50:
-            bar_glow = "rgba(245, 158, 11, 0.3)"
-        else:
-            bar_glow = "rgba(100, 116, 139, 0.2)"
-        
-        # Create a container for each job
-        with st.container():
-            # Check if it's a live job
-            is_live_job = rec.get('is_live', False)
-            live_badge = "🔴 LIVE" if is_live_job else ""
-            
-            # Check if Easy Apply
-            easy_apply = rec.get('easy_apply', False)
-            
-            # Get job source platform
-            job_source = rec.get('source', 'Job Board')
-            
-            # Source badge colors
-            source_colors = {
-                'LinkedIn': '#0A66C2',
-                'Indeed': '#2164F3',
-                'Glassdoor': '#0CAA41',
-                'Monster': '#6E45A7',
-                'ZipRecruiter': '#1A73E8',
-                'Dice': '#FB4F14',
-                'CareerBuilder': '#17A2B8',
-                'SimplyHired': '#009688',
-                'Lever': '#4F46E5',
-                'Greenhouse': '#2ECC71',
-                'Workday': '#E25822',
-                'Ashby': '#7C3AED',
-                'Active Jobs DB': '#06B6D4',
-            }
-            source_color = source_colors.get(job_source, '#64748B')
-            
-            # Format posting date
-            days_ago = rec.get('days_ago', 0)
-            if days_ago == 0:
-                post_time = "Just posted"
-            elif days_ago == 1:
-                post_time = "1 day ago"
-            elif days_ago < 7:
-                post_time = f"{days_ago} days ago"
-            else:
-                post_time = f"{days_ago // 7} week{'s' if days_ago > 13 else ''} ago"
-            
-            
-            
-            # Prepare HTML content - MUST BE A SINGLE LINE to avoid markdown code block interpretation
-            # Using basic concatenation for absolute safety against indentation
-            title_section = f'<h3 style="margin: 0; color: #A78BFA; font-size: 1.12em; font-weight: 700;">{rec["title"]}</h3>'
-            live_badge_html = f'<span style="background: #EF444420; color: #EF4444; padding: 3px 10px; border-radius: 12px; font-size: 0.7em; font-weight: 700; border: 1px solid #EF444444;">{live_badge}</span>' if is_live_job else ''
-            easy_apply_html = f'<span style="background: #10B98120; color: #10B981; padding: 3px 10px; border-radius: 12px; font-size: 0.7em; font-weight: 700; border: 1px solid #10B98144;">⚡ EASY APPLY</span>' if easy_apply else ''
-            source_badge_html = f'<span style="background: {source_color}20; color: {source_color}; padding: 3px 10px; border-radius: 12px; font-size: 0.7em; font-weight: 700; border: 1px solid {source_color}44;">📍 {job_source}</span>'
-            
-            company_section = f'<p style="margin: 6px 0 0 0; color: #94A3B8; font-size: 0.95em;"><strong style="color: #E2E8F0;">{rec["company"]}</strong></p>'
-            
-            details_section = f"""
-            <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px;">
-                <span style="color: #94A3B8; font-size: 0.88em;">📍 {rec['location']}</span>
-                <span style="color: #94A3B8; font-size: 0.88em;">💰 {rec.get('salary', 'Not specified')}</span>
-                <span style="color: #94A3B8; font-size: 0.88em;">📅 {post_time}</span>
-                <span style="color: #94A3B8; font-size: 0.88em;">{'🏠 Remote' if 'remote' in rec['location'].lower() else '🏢 ' + rec.get('contract_type', 'Full-time')}</span>
-            </div>
-            """.replace('\n', '').strip()
+            badge_color  = "#7C3AED"
+            badge_text   = "◇ Potential"
+            border_color = "rgba(124,58,237,0.3)"
 
-            match_badge_html = f'<span style="background: {badge_color}18; color: {badge_color}; padding: 5px 14px; border-radius: 20px; font-size: 0.82em; font-weight: 700; border: 1px solid {badge_color}44; white-space: nowrap;">{badge}</span>'
+        # Meta info
+        is_live    = rec.get('is_live', False)
+        easy_apply = rec.get('easy_apply', False)
+        job_source = rec.get('source', 'Job Board')
+        days_ago   = rec.get('days_ago', 0)
+        salary     = rec.get('salary', 'Not specified')
+        location   = rec.get('location', 'N/A')
+        contract   = rec.get('contract_type', 'Full-time')
+        apply_link = rec.get('apply_link', '#')
+        match_pct  = rec['match_score']
 
-            card_html = f"""<div class="glass-card" style="margin-bottom: 6px; padding: 22px 24px;"><div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;"><div style="flex: 1;"><div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">{title_section}{live_badge_html}{easy_apply_html}{source_badge_html}</div>{company_section}{details_section}</div>{match_badge_html}</div></div>"""
-            
-            st.markdown(card_html, unsafe_allow_html=True)
-            
-            # Match score progress bar
-            st.progress(rec['match_score'] / 100, text=f"Match: {rec['match_score']}%")
-            
-            # Job description with company name
-            description = rec.get('description', '')
-            company_prefix = f"<strong>{rec['company']}</strong> is hiring: "
-            if len(description) > 200:
-                description = description[:200] + "..."
-            st.markdown(f"<p style='color: #94A3B8; font-size: 0.92em; line-height: 1.7;'>{company_prefix}{description}</p>", unsafe_allow_html=True)
-            
-            # Matching skills
-            if rec['direct_matches']:
-                skills_html = "".join(
-                    [f'<span style="display:inline-block; background:{badge_color}15; color:{badge_color}; padding:3px 10px; margin:2px; border-radius:12px; font-size:0.8em; border:1px solid {badge_color}33;">{s}</span>'
-                     for s in rec['direct_matches'][:5]]
+        if days_ago == 0:       post_time = "Just posted"
+        elif days_ago == 1:     post_time = "1 day ago"
+        elif days_ago < 7:      post_time = f"{days_ago} days ago"
+        else:                   post_time = f"{days_ago // 7} week{'s' if days_ago > 13 else ''} ago"
+
+        source_colors = {
+            'LinkedIn': '#0A66C2', 'Indeed': '#2164F3', 'Glassdoor': '#0CAA41',
+            'ZipRecruiter': '#1A73E8', 'Lever': '#4F46E5', 'Greenhouse': '#2ECC71',
+            'Workday': '#E25822', 'Ashby': '#7C3AED', 'Active Jobs DB': '#06B6D4',
+        }
+        sc = source_colors.get(job_source, '#64748B')
+
+        # Description — show first 350 chars safely
+        raw_desc  = rec.get('description', '')
+        desc_safe = _html.escape(raw_desc[:350] + '\u2026' if len(raw_desc) > 350 else raw_desc)
+
+        # Matching skill pills
+        skills_html = ""
+        if rec.get('direct_matches'):
+            pills = "".join(
+                f'<span style="display:inline-block;background:{badge_color}18;color:{badge_color};'
+                f'padding:4px 12px;margin:3px 2px;border-radius:20px;font-size:0.78em;'
+                f'font-weight:600;border:1px solid {badge_color}44;">{s}</span>'
+                for s in rec['direct_matches'][:6]
+            )
+            extra = (f'<span style="color:#64748B;font-size:0.8em;margin-left:4px;">+{len(rec["direct_matches"])-6} more</span>'
+                     if len(rec['direct_matches']) > 6 else "")
+            skills_html = (
+                '<div style="margin-top:14px;">'
+                '<p style="color:#64748B;font-size:0.76em;font-weight:700;text-transform:uppercase;'
+                'letter-spacing:0.8px;margin:0 0 6px 0;">Matching Skills</p>'
+                + pills + extra + '</div>'
+            )
+
+        # Match bar
+        bar_html = (
+            f'<div style="margin:14px 0 0 0;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">'
+            f'<span style="color:#94A3B8;font-size:0.76em;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Skill Match</span>'
+            f'<span style="color:{badge_color};font-size:0.85em;font-weight:800;">{match_pct}%</span></div>'
+            f'<div style="background:rgba(15,23,42,0.7);border-radius:8px;height:8px;overflow:hidden;border:1px solid rgba(148,163,184,0.1);">'
+            f'<div style="background:linear-gradient(90deg,{badge_color}88,{badge_color});width:{match_pct}%;'
+            f'height:100%;border-radius:8px;box-shadow:0 0 10px {badge_color}66;"></div></div></div>'
+        )
+
+        # Status pills
+        live_pill = ('<span style="background:#EF444420;color:#EF4444;padding:3px 10px;border-radius:12px;'
+                     'font-size:0.72em;font-weight:700;border:1px solid #EF444444;">🔴 LIVE</span>&nbsp;'
+                     if is_live else "")
+        ea_pill   = ('<span style="background:#10B98120;color:#10B981;padding:3px 10px;border-radius:12px;'
+                     'font-size:0.72em;font-weight:700;border:1px solid #10B98144;">⚡ EASY APPLY</span>&nbsp;'
+                     if easy_apply else "")
+        src_pill  = (f'<span style="background:{sc}20;color:{sc};padding:3px 10px;border-radius:12px;'
+                     f'font-size:0.72em;font-weight:700;border:1px solid {sc}44;">{job_source}</span>')
+        match_pill = (f'<span style="background:{badge_color}18;color:{badge_color};padding:5px 16px;'
+                      f'border-radius:20px;font-size:0.82em;font-weight:700;border:1px solid {badge_color}44;'
+                      f'white-space:nowrap;">{badge_text}</span>')
+
+        # Apply button inside card
+        # Apply button handled by st.link_button below the card (direct redirect, no URL modification)
+
+        # Build card as a single compact string — avoids Streamlit treating
+        # indented multi-line strings as code blocks (4-space rule)
+        card = (
+            f'<div style="background:rgba(20,30,50,0.78);backdrop-filter:blur(24px) saturate(160%);'
+            f'border:1px solid rgba(148,163,184,0.1);border-left:4px solid {border_color};'
+            f'border-radius:18px;padding:24px 26px;margin-bottom:20px;'
+            f'box-shadow:0 6px 28px rgba(0,0,0,0.22);transition:transform 0.25s ease,box-shadow 0.25s ease;"'
+            f' onmouseover="this.style.transform=\'translateY(-4px)\';this.style.boxShadow=\'0 14px 40px rgba(0,0,0,0.32)\';"'
+            f' onmouseout="this.style.transform=\'translateY(0)\';this.style.boxShadow=\'0 6px 28px rgba(0,0,0,0.22)\';">'
+
+            # Title + company + match badge row
+            f'<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:10px;">'
+            f'<div style="flex:1;min-width:0;">'
+            f'<h3 style="margin:0 0 3px 0;color:#C4B5FD;font-size:1.18em;font-weight:800;letter-spacing:-0.2px;">{rec["title"].title()}</h3>'
+            f'<p style="margin:0;color:#E2E8F0;font-size:0.96em;font-weight:600;">{rec["company"]}</p>'
+            f'</div>{match_pill}</div>'
+
+            # Status pills
+            f'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">{live_pill}{ea_pill}{src_pill}</div>'
+
+            # Meta row
+            f'<div style="display:flex;flex-wrap:wrap;gap:16px;margin-bottom:14px;">'
+            f'<span style="color:#94A3B8;font-size:0.85em;">&#128205; {location}</span>'
+            f'<span style="color:#94A3B8;font-size:0.85em;">&#128176; {salary}</span>'
+            f'<span style="color:#94A3B8;font-size:0.85em;">&#128197; {post_time}</span>'
+            f'<span style="color:#94A3B8;font-size:0.85em;">&#127970; {contract}</span>'
+            f'</div>'
+
+            # Divider
+            f'<div style="border-top:1px solid rgba(148,163,184,0.1);margin-bottom:14px;"></div>'
+
+            # Description box
+            f'<div style="background:rgba(15,23,42,0.45);border-radius:10px;padding:14px 16px;margin-bottom:8px;">'
+            f'<p style="color:#64748B;font-size:0.74em;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;margin:0 0 8px 0;">Job Description</p>'
+            f'<p style="color:#CBD5E1;font-size:0.91em;line-height:1.75;margin:0;">{desc_safe}</p>'
+            f'</div>'
+
+            # Skills + match bar
+            + skills_html
+            + bar_html
+            + '</div>'
+        )
+        st.markdown(card, unsafe_allow_html=True)
+
+        # --- Auto-fetch exact company name + description from source ---
+        if apply_link and apply_link != '#':
+            res = fetch_job_from_source(apply_link)
+            if not res['error']:
+                real_company = res['company'] or rec['company']
+                req_text     = res['description']
+                st.markdown(
+                    f'<div style="margin:4px 0 12px 0;padding:10px 14px;'
+                    f'background:rgba(124,58,237,0.08);border-left:3px solid rgba(124,58,237,0.4);'
+                    f'border-radius:0 8px 8px 0;">'
+                    f'<p style="margin:0 0 4px 0;">'
+                    f'<span style="color:#A78BFA;font-size:0.72em;font-weight:700;'
+                    f'text-transform:uppercase;letter-spacing:0.6px;">Company: </span>'
+                    f'<span style="color:#E2E8F0;font-size:0.86em;font-weight:600;">'
+                    f'{_html.escape(real_company)}</span></p>'
+                    f'<p style="color:#CBD5E1;font-size:0.84em;line-height:1.65;margin:0;">'
+                    f'{_html.escape(req_text)}</p></div>',
+                    unsafe_allow_html=True
                 )
-                extra = f' <span style="color:#64748B; font-size:0.82em;">+{len(rec["direct_matches"]) - 5} more</span>' if len(rec['direct_matches']) > 5 else ""
-                st.markdown(f"""
-                <div style="margin-top: 4px;">
-                    <span style="color: #64748B; font-size: 0.82em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Matching Skills</span><br/>
-                    {skills_html}{extra}
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # Action buttons
-            col1, col2, col3 = st.columns([2, 1, 1])
-            
-            with col2:
-                # Favorite button (only for non-live jobs with valid IDs)
-                if not is_live_job and isinstance(rec.get('job_id'), int):
-                    is_fav = is_favorite(user['id'], rec['job_id'])
-                    
+
+        # --- Action row: Apply + Save (single row) ---
+        has_apply = apply_link and apply_link != '#'
+        has_save  = not is_live and isinstance(rec.get('job_id'), int)
+
+        if has_apply or has_save:
+            apply_col, save_col, _ = st.columns([3, 2, 3])
+
+            # Apply Now — st.link_button opens URL directly in a new browser tab,
+            # no Streamlit rerun, zero URL modification
+            if has_apply:
+                with apply_col:
+                    st.link_button(
+                        "🚀 Apply Now — View Original Post",
+                        apply_link,
+                        use_container_width=True,
+                        type="primary"
+                    )
+
+            # Save / Unsave (only for jobs stored in local DB)
+            if has_save:
+                is_fav = is_favorite(user['id'], rec['job_id'])
+                with save_col:
                     if is_fav:
-                        if st.button("❤️ Saved", key=f"fav_{rec['job_id']}", use_container_width=True):
+                        if st.button("❤️ Saved", key=f"fav_{rec['job_id']}_{i}", use_container_width=True):
                             remove_favorite(user['id'], rec['job_id'])
                             st.rerun()
                     else:
-                        if st.button("🤍 Save", key=f"fav_{rec['job_id']}", use_container_width=True):
+                        if st.button("🤍 Save Job", key=f"fav_{rec['job_id']}_{i}", use_container_width=True):
                             add_favorite(user['id'], rec['job_id'])
                             st.rerun()
-            
-            with col3:
-                # Apply button
-                if rec.get('apply_link') and rec['apply_link'] != '#':
-                    st.link_button("Apply Now →", rec['apply_link'], use_container_width=True, type="primary")
-            
-            st.markdown("<hr style='border-color: rgba(148,163,184,0.08); margin: 16px 0;'>", unsafe_allow_html=True)
+
+        st.markdown("<div style='margin-bottom:16px;'></div>", unsafe_allow_html=True)
 
 
 # ========================== RECOMMENDATIONS PAGE ==========================
@@ -1499,7 +1802,7 @@ def show_recommendations_page():
             "Naukri": f"https://www.naukri.com/{role_name.lower().replace(' ', '-')}-jobs",
         }
         
-        with st.expander(f"{'#1' if i == 0 else '#2' if i == 1 else '#3' if i == 2 else 4} {role_name} — {match_pct}% Match", expanded=(i == 0)):
+        with st.expander(f"{'#1' if i == 0 else '#2' if i == 1 else '#3' if i == 2 else str(i+1)} {role_name} ({match_pct}% Match)", expanded=(i == 0)):
             
             # Match bar
             st.markdown(f"""
