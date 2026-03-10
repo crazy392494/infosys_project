@@ -113,25 +113,28 @@ st.markdown("""
     }
 
     /* Hide broken Material Icons / arrow text in Expanders */
-    .streamlit-expanderHeader .material-symbols-rounded,
-    [data-testid="stExpanderToggleIcon"],
-    [data-testid="stExpander"] svg {
+    div[data-testid="stExpander"] details summary svg {
         display: none !important;
-        visibility: hidden !important;
     }
     
-    /* Catch and hide raw ligature text like 'arrow_right' */
-    .streamlit-expanderHeader p:contains("arrow_right"),
-    .streamlit-expanderHeader span:contains("arrow_right"),
-    [data-testid="stExpanderToggleIcon"]::after,
-    [data-testid="stExpanderToggleIcon"]::before {
+    /* Target the broken 'V' or 'arrow' ligature text directly */
+    div[data-testid="stExpander"] details summary div[data-testid="stExpanderToggleIcon"] {
         display: none !important;
-        content: "" !important;
     }
     
-    /* Global fix for Streamlit's new Material Symbols leak */
-    .st-emotion-cache-12w0qpk, .st-emotion-cache-10fha31, .st-emotion-cache-ue6ba6 {
+    /* Absolute hammer to hide any junk text appearing where icons should be */
+    .st-emotion-cache-p5msec, .st-emotion-cache-12w0qpk, .st-emotion-cache-6q9sum, .st-emotion-cache-ue6ba6 {
         display: none !important;
+        font-size: 0 !important;
+        color: transparent !important;
+    }
+    
+    /* Custom clean look for Expanders in Sidebar */
+    section[data-testid="stSidebar"] div[data-testid="stExpander"] {
+        border: none !important;
+        background: rgba(255, 255, 255, 0.05) !important;
+        border-radius: 8px !important;
+        margin-bottom: 10px;
     }
 
     .main .block-container {
@@ -1960,7 +1963,7 @@ def show_sidebar():
                 logout()
                 
             st.markdown("---")
-            with st.expander("⚙️ Google Gemini API Setup"):
+            with st.expander("Google Gemini API Setup"):
                 st.caption("Enter your Gemini API key to enable AI features and real-time job synthesis.")
                 try:
                     import config
