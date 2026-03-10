@@ -1962,51 +1962,6 @@ def show_sidebar():
             if st.button("Logout", use_container_width=True, key="nav_logout"):
                 logout()
                 
-            st.markdown("---")
-            with st.expander("Google Gemini API Setup"):
-                st.caption("Enter your Gemini API key to enable AI features and real-time job synthesis.")
-                try:
-                    import config
-                    current_gemini = getattr(config, 'GEMINI_API_KEY', '')
-                except Exception:
-                    current_gemini = ''
-                
-                gemini_key_input = st.text_input("Gemini API Key", value=current_gemini, type="password", key="sidebar_gemini_key")
-                if st.button("Save Key", use_container_width=True, key="sidebar_save_gemini"):
-                    import os, re
-                    os.makedirs(".streamlit", exist_ok=True)
-                    secrets_path = ".streamlit/secrets.toml"
-                    content = ""
-                    if os.path.exists(secrets_path):
-                        with open(secrets_path, "r", encoding="utf-8") as f:
-                            content = f.read()
-                    
-                    if "GEMINI_API_KEY" in content:
-                        content = re.sub(r'GEMINI_API_KEY\s*=\s*".*"', f'GEMINI_API_KEY = "{gemini_key_input}"', content)
-                    else:
-                        content += f'\nGEMINI_API_KEY = "{gemini_key_input}"\n'
-                        
-                    with open(secrets_path, "w", encoding="utf-8") as f:
-                        f.write(content)
-                        
-                    # Force reload of components
-                    import sys
-                    import importlib
-                    if 'config' in sys.modules:
-                        importlib.reload(sys.modules['config'])
-                        
-                    if 'ai_service' in sys.modules:
-                        if hasattr(sys.modules['ai_service'], '_ai_analyzer'):
-                            sys.modules['ai_service']._ai_analyzer = None
-                        importlib.reload(sys.modules['ai_service'])
-                        
-                    if 'job_search_api' in sys.modules:
-                        if hasattr(sys.modules['job_search_api'], '_job_api'):
-                            sys.modules['job_search_api']._job_api = None # Reset singleton
-                        importlib.reload(sys.modules['job_search_api'])
-                        
-                    st.success("Gemini Key successfully saved and loaded!")
-                    st.rerun()
 
         
         else:
