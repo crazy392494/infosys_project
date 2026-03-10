@@ -8,3 +8,4 @@ fpdf2>=2.7.7
 Pillow>=10.2.0
 google-generativeai>=0.3.0
 requests>=2.31.0
+python-jobspy>=1.1.73

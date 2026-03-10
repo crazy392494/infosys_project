@@ -8,7 +8,10 @@ import google.generativeai as genai
 from typing import Dict, List, Optional, Any
 
 # Configure Gemini API
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+try:
+    from config import GEMINI_API_KEY
+except ImportError:
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 
 class AIResumeAnalyzer:
     """AI-powered resume analyzer using Google Gemini"""
@@ -27,7 +30,7 @@ class AIResumeAnalyzer:
                         'temperature': 0.7,
                         'top_p': 0.95,
                         'top_k': 40,
-                        'max_output_tokens': 2048,
+                        'max_output_tokens': 8192,
                     }
                 )
                 self.is_configured = True

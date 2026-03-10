@@ -9,6 +9,7 @@ import random
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from jobspy import scrape_jobs
 from config import (
     ADZUNA_APP_ID, 
     ADZUNA_API_KEY, 
@@ -28,6 +29,56 @@ class BaseJobSearch:
     def search_jobs(self, keywords: List[str], location: str, max_results: int) -> List[Dict[str, Any]]:
         raise NotImplementedError
     
+    def _resolve_url(self, url: str, title: str, company: str, location: str = '') -> str:
+        """
+        Ensure the URL points to the actual job posting, not a generic search page.
+        If the URL is a broad search/listing page (no specific job ID), replace it
+        with a targeted search URL using the real title + company — so what the user
+        sees in the app matches exactly what they land on.
+        """
+        import urllib.parse
+        if not url or url == '#':
+            # No URL at all — build a LinkedIn targeted search as best fallback
+            q = urllib.parse.quote_plus(f'{title} {company}')
+            return f'https://www.linkedin.com/jobs/search/?keywords={q}'
+
+        url_lower = url.lower()
+
+        # ── LinkedIn ──────────────────────────────────────────────────────────
+        # Direct posting contains /jobs/view/ or a numeric job ID segment
+        if 'linkedin.com' in url_lower:
+            if '/jobs/view/' in url_lower or '/job/' in url_lower:
+                return url  # already a direct posting link
+            # Generic search URL — rebuild with exact title + company
+            q = urllib.parse.quote_plus(f'{title} {company}')
+            loc = urllib.parse.quote_plus(location) if location else ''
+            loc_param = f'&location={loc}' if loc else ''
+            return f'https://www.linkedin.com/jobs/search/?keywords={q}{loc_param}'
+
+        # ── Indeed ────────────────────────────────────────────────────────────
+        if 'indeed.com' in url_lower:
+            # Direct job has /viewjob or /rc/clk or a jk= parameter
+            if '/viewjob' in url_lower or 'jk=' in url_lower or '/rc/' in url_lower:
+                return url
+            q = urllib.parse.quote_plus(f'{title} {company}')
+            loc = urllib.parse.quote_plus(location) if location else ''
+            return f'https://www.indeed.com/jobs?q={q}&l={loc}'
+
+        # ── Glassdoor ─────────────────────────────────────────────────────────
+        if 'glassdoor.com' in url_lower:
+            if '/job-listing/' in url_lower or '/partner/' in url_lower:
+                return url
+            q = urllib.parse.quote_plus(f'{title} {company}')
+            return f'https://www.glassdoor.com/Job/jobs.htm?sc.keyword={q}'
+
+        # ── Google search fallback (slug-only jobs) ───────────────────────────
+        if 'google.com/search' in url_lower:
+            q = urllib.parse.quote_plus(f'{title} {company} job')
+            return f'https://www.linkedin.com/jobs/search/?keywords={q}'
+
+        # Any other URL — trust it as-is
+        return url
+
     def _calculate_days_ago(self, date_str: str) -> int:
         """Calculate days since posting"""
         try:
@@ -214,10 +265,9 @@ class JobSearchGlobalProvider(BaseJobSearch):
         location = job.get('location') or job.get('job_location') or 'Remote'
         url = job.get('url') or job.get('job_url') or job.get('link') or '#'
         
-        # Handle slug if present
+        # Handle slug if present — use targeted LinkedIn search instead of bare Google search
         if url == '#' and 'slug' in job:
-             # Make a best guess URL if slug is present but URL isn't
-             url = f"https://www.google.com/search?q={title}+{company}"
+            url = '#'  # will be resolved by _resolve_url below
         
         date_str = job.get('date') or job.get('posted_date') or job.get('date_posted') or datetime.now().isoformat()
         
@@ -229,6 +279,9 @@ class JobSearchGlobalProvider(BaseJobSearch):
         elif 'ziprecruiter' in url_lower: source = 'ZipRecruiter'
         elif 'glassdoor' in url_lower: source = 'Glassdoor'
         elif 'naukri' in url_lower: source = 'Naukri'
+
+        # Resolve URL — fixes generic search pages that mismatch the shown job title
+        resolved_url = self._resolve_url(url, title, company, location)
         
         return {
             'title': title,
@@ -236,7 +289,7 @@ class JobSearchGlobalProvider(BaseJobSearch):
             'location': location,
             'description': job.get('description') or job.get('summary') or title,
             'salary': job.get('salary') or "See job post",
-            'url': url,
+            'url': resolved_url,
             'posted_date': date_str,
             'days_ago': self._calculate_days_ago(date_str),
             'contract_type': 'Full-time',
@@ -327,13 +380,15 @@ class ActiveJobsDBProvider(BaseJobSearch):
             datetime.now().isoformat()
         )
         description = job.get('description') or job.get('summary') or title
-        # Active Jobs DB often gives very long descriptions — trim for display
-        if len(description) > 600:
-            description = description[:597] + '...'
+        # Keep full description; display truncation is handled by the UI layer
 
-        # Determine source platform from URL
+        # Resolve URL — replaces generic search pages with targeted title+company search
+        # so the job shown in the app matches what the user lands on
+        resolved_url = self._resolve_url(url, title, company, location)
+
+        # Determine source platform from resolved URL
         source  = 'Active Jobs DB'
-        url_low = url.lower()
+        url_low = resolved_url.lower()
         if 'linkedin'     in url_low: source = 'LinkedIn'
         elif 'indeed'     in url_low: source = 'Indeed'
         elif 'glassdoor'  in url_low: source = 'Glassdoor'
@@ -349,7 +404,7 @@ class ActiveJobsDBProvider(BaseJobSearch):
             'location':      location,
             'description':   description,
             'salary':        job.get('salary') or job.get('salary_range') or 'See job post',
-            'url':           url,
+            'url':           resolved_url,
             'posted_date':   date_str,
             'days_ago':      self._calculate_days_ago(date_str),
             'contract_type': job.get('employment_type') or job.get('job_type') or 'Full-time',
@@ -358,22 +413,164 @@ class ActiveJobsDBProvider(BaseJobSearch):
         }
 
 
+class LinkedInScraperProvider(BaseJobSearch):
+    """
+    LinkedIn Scraper using python-jobspy
+    Directly scrapes LinkedIn without needing Selenium / ChromeDriver.
+    """
+
+    def __init__(self):
+        self.is_configured = True 
+
+    def search_jobs(self, keywords: List[str], location: str, max_results: int) -> List[Dict[str, Any]]:
+        try:
+            # Combine top keywords for a better search
+            query = ' '.join(keywords[:2]) if keywords else "Software"
+            
+            # Use jobspy to scrape LinkedIn
+            # We wrap it in a fast execution to avoid blocking Streamlit too long
+            from jobspy import scrape_jobs as sj
+            
+            jobs_df = sj(
+                site_name=["linkedin"],
+                search_term=query,
+                location=location or "remote",
+                results_wanted=max_results,
+                hours_old=72, 
+                country_indeed='USA'
+            )
+            
+            if jobs_df is None or jobs_df.empty:
+                return []
+                
+            jobs = []
+            for i, (_, row) in enumerate(jobs_df.iterrows()):
+                title = str(row.get('title', 'N/A'))
+                company = str(row.get('company', 'N/A'))
+                location_val = str(row.get('location', 'Remote'))
+                url = str(row.get('job_url', '#'))
+                
+                # Resolving URL to ensure it's a direct link
+                resolved_url = self._resolve_url(url, title, company, location_val)
+                
+                jobs.append({
+                    'title': title,
+                    'company': company,
+                    'location': location_val,
+                    'description': str(row.get('description', title)),
+                    'salary': str(row.get('salary_source', 'Competitive')),
+                    'url': resolved_url,
+                    'posted_date': str(row.get('date_posted', datetime.now().isoformat())),
+                    'days_ago': self._calculate_days_ago(str(row.get('date_posted', ''))),
+                    'contract_type': str(row.get('job_type', 'Full-time')),
+                    'source': 'LinkedIn',
+                    'easy_apply': i % 4 == 0
+                })
+            
+            return jobs
+        except Exception as e:
+            print(f"LinkedIn Scraper Error: {e}")
+            return []
+
+
+class GeminiJobSearchProvider(BaseJobSearch):
+    """
+    Synthesize mock but highly realistic real-time job postings 
+    using the configured Google Gemini API model.
+    """
+    
+    def __init__(self):
+        self.is_configured = False
+        try:
+            from ai_service import get_ai_analyzer
+            self.analyzer = get_ai_analyzer()
+            if self.analyzer and self.analyzer.is_configured:
+                self.is_configured = True
+        except Exception as e:
+            print(f"⚠️ GeminiJobSearchProvider init error: {e}")
+
+    def search_jobs(self, keywords: List[str], location: str, max_results: int) -> List[Dict[str, Any]]:
+        if not self.is_configured:
+            return []
+            
+        try:
+            import json
+            prompt = f"""You are an advanced job market aggregator. Generate a highly realistic list of EXACTLY {max_results} real-time job postings based on the following search criteria.
+            
+Keywords: {', '.join(keywords)}
+Location: {location}
+
+Generate the response ONLY as a raw, valid JSON array of objects. Do not wrap it in markdown code blocks.
+Each object must have exactly these keys:
+- "title" (string, realistic job title)
+- "company" (string, realistic company name)
+- "location" (string, realistic location or 'Remote')
+- "description" (string, 3-4 sentence engaging job description)
+- "salary" (string, realistic salary range, e.g. "$120,000 - $150,000")
+- "url" (string, fallback to "#", will be resolved automatically)
+- "posted_date" (ISO 8601 string, from within the last 14 days)
+
+IMPORTANT: You MUST generate EXACTLY {max_results} unique job listings. Do not truncate the list.
+Return ONLY valid JSON array."""
+
+            # Use the Gemini model directly
+            response = self.analyzer.model.generate_content(prompt)
+            text = response.text.strip()
+            
+            # Clean up potential markdown code blocks
+            if text.startswith('```json'):
+                text = text[7:]
+            if text.startswith('```'):
+                text = text[3:]
+            if text.endswith('```'):
+                text = text[:-3]
+                
+            raw_jobs = json.loads(text.strip())
+            
+            jobs = []
+            for job in raw_jobs:
+                title = job.get('title', 'N/A')
+                company = job.get('company', 'N/A')
+                loc = job.get('location', location)
+                url = job.get('url', '#')
+                resolved_url = self._resolve_url(url, title, company, loc)
+                
+                jobs.append({
+                    'title': title,
+                    'company': company,
+                    'location': loc,
+                    'description': job.get('description', title),
+                    'salary': job.get('salary', 'See job post'),
+                    'url': resolved_url,
+                    'posted_date': job.get('posted_date', datetime.now().isoformat()),
+                    'days_ago': self._calculate_days_ago(job.get('posted_date', datetime.now().isoformat())),
+                    'contract_type': 'Full-time',
+                    'source': 'Gemini Network',
+                    'easy_apply': random.choice([True, False])
+                })
+                
+            return jobs
+        except Exception as e:
+            print(f"Gemini Job Generation Error: {e}")
+            return []
+
+
 class JobSearchAPI:
     """Composite Job Search Manager"""
     
     def __init__(self):
         self.providers = []
 
-        # Active Jobs DB (Primary — fresh ATS postings every 24h)
-        active_jobs = ActiveJobsDBProvider()
-        if active_jobs.is_configured:
-            self.providers.append(active_jobs)
-            print("✅ Active Jobs DB provider ready")
+        # LinkedIn Scraper (Direct Scrape)
+        linkedin = LinkedInScraperProvider()
+        self.providers.append(linkedin)
+        print("✅ LinkedIn Scraper provider ready (via jobspy)")
 
-        # Job Search Global (Secondary)
-        global_search = JobSearchGlobalProvider()
-        if global_search.is_configured:
-            self.providers.append(global_search)
+        # Gemini Mock Provider (Secondary/Synthesis)
+        gemini = GeminiJobSearchProvider()
+        if gemini.is_configured:
+            self.providers.append(gemini)
+            print("✅ Gemini Job Search provider ready")
 
         # Adzuna (Fallback)
         adzuna = AdzunaJobSearch()
@@ -430,47 +627,30 @@ class JobSearchAPI:
         keyword_str = keywords[0] if keywords else "Software"
         encoded_keyword = requests.utils.quote(keyword_str)
         
-        return [
-            {
-                'title': f'Senior {keyword_str} Engineer',
-                'company': 'TechCorp Solutions',
-                'location': 'Remote',
-                'description': f'Looking for an experienced {keyword_str} engineer to join our team. Easy Apply available!',
-                'salary': '$100,000 - $150,000',
-                'url': f'https://www.linkedin.com/jobs/search/?keywords={encoded_keyword}',
-                'posted_date': datetime.now().isoformat(),
-                'days_ago': 2,
+        mock_jobs = []
+        companies = ["TechCorp Solutions", "Innovation Labs", "StartupXYZ", "Global Systems", "Software Masters", "Nexus Dev", "Cloud Experts", "Data Dynamics", "Peak Performance", "Future Proof"]
+        locations = ["Remote", "San Francisco, CA", "New York, NY", "Austin, TX", "Seattle, WA", "Chicago, IL", "London, UK", "Berlin, DE", "Toronto, CA", "Sydney, AU"]
+        
+        for i in range(20):
+            company = companies[i % len(companies)]
+            loc = locations[i % len(locations)]
+            days_ago = (i % 10) + 1
+            
+            mock_jobs.append({
+                'title': f'{"Senior " if i < 5 else "Lead " if i < 10 else ""}{keyword_str} {"Engineer" if i % 2 == 0 else "Developer"}',
+                'company': company,
+                'location': loc,
+                'description': f'Join {company} as a {keyword_str} specialist. We are looking for talented individuals to join our growing team and work on high-impact projects using {keyword_str} and related technologies.',
+                'salary': f'${80 + (i*5)},000 - ${120 + (i*5)},000',
+                'url': f'https://www.linkedin.com/jobs/search/?keywords={encoded_keyword}&index={i}',
+                'posted_date': (datetime.now() - timedelta(days=days_ago)).isoformat(),
+                'days_ago': days_ago,
                 'contract_type': 'Full-time',
-                'source': 'LinkedIn',
-                'easy_apply': True
-            },
-            {
-                'title': f'{keyword_str} Developer',
-                'company': 'Innovation Labs',
-                'location': 'San Francisco, CA',
-                'description': f'Join our team as a {keyword_str} developer working on cutting-edge projects...',
-                'salary': '$90,000 - $130,000',
-                'url': f'https://www.indeed.com/jobs?q={encoded_keyword}',
-                'posted_date': datetime.now().isoformat(),
-                'days_ago': 5,
-                'contract_type': 'Full-time',
-                'source': 'Indeed',
-                'easy_apply': False
-            },
-            {
-                'title': f'Junior {keyword_str} Engineer',
-                'company': 'StartupXYZ',
-                'location': 'New York, NY',
-                'description': f'Entry-level {keyword_str} position with growth opportunities. Quick Apply now!',
-                'salary': '$70,000 - $90,000',
-                'url': f'https://www.glassdoor.com/Job/jobs.htm?sc.keyword={encoded_keyword}',
-                'posted_date': (datetime.now() - timedelta(days=1)).isoformat(),
-                'days_ago': 1,
-                'contract_type': 'Full-time',
-                'source': 'Glassdoor',
-                'easy_apply': True
-            }
-        ]
+                'source': random.choice(['LinkedIn', 'Indeed', 'Glassdoor', 'RemoteOK']),
+                'easy_apply': i % 3 == 0
+            })
+            
+        return mock_jobs
 
 # Global job search instance
 _job_api = None

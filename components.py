@@ -203,8 +203,9 @@ def render_job_card(job: dict, match_score: float, direct_matches: list):
         badge_icon = ""
     
     description = job.get('description', '')
-    if len(description) > 200:
-        description = description[:200] + "..."
+    description_preview = description
+    if len(description_preview) > 400:
+        description_preview = description_preview[:400] + "…"
     
     match_skills_html = ""
     if direct_matches:
@@ -250,7 +251,7 @@ def render_job_card(job: dict, match_score: float, direct_matches: list):
         
         {render_match_bar(match_score)}
         
-        <p style="color: #94A3B8; line-height: 1.7; margin: 14px 0 0 0; font-size: 0.92em;">{description}</p>
+        <p style="color: #94A3B8; line-height: 1.7; margin: 14px 0 0 0; font-size: 0.92em;">{description_preview}</p>
         
         {match_skills_html}
         
