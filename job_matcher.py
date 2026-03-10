@@ -13,16 +13,21 @@ def normalize_skill(skill: str) -> str:
     return skill.lower().strip()
 
 
-def calculate_skill_match(resume_skills: List[str], job_skills: List[str]) -> Dict[str, Any]:
+def calculate_skill_match(resume_skills: List[str], job_skills: List[str], title: str = '', description: str = '') -> Dict[str, Any]:
     """
-    Calculate how well resume skills match job requirements
-    Returns match details including score and matching skills
+    Calculate how well resume skills match job requirements.
+    Returns accurate, varied match percentages — no two jobs score identically
+    unless they genuinely require the same overlapping skills.
     """
-    # Normalize all skills
     resume_skills_set = {normalize_skill(s) for s in resume_skills}
+
+    # If job_skills is empty, try to infer from the description
+    if not job_skills and description:
+        job_skills = extract_skills_from_description(description)
+
     job_skills_set = {normalize_skill(s) for s in job_skills}
-    
-    # Skill synonyms and related technologies
+
+    # Skill synonyms — normalise before matching
     skill_synonyms = {
         'javascript': {'js', 'ecmascript'},
         'typescript': {'ts'},
@@ -35,11 +40,11 @@ def calculate_skill_match(resume_skills: List[str], job_skills: List[str]) -> Di
         'amazon web services': {'aws'},
         'google cloud platform': {'gcp', 'google cloud'},
         'microsoft azure': {'azure'},
-        'sql': {'mysql', 'postgresql', 'sql server'},
+        'sql': {'mysql', 'postgresql', 'sql server', 'postgres'},
         'nosql': {'mongodb', 'cassandra', 'dynamodb'},
     }
-    
-    # Related skills (partial credit)
+
+    # Related skills — partial credit
     related_skills = {
         'react': {'javascript', 'typescript', 'html', 'css'},
         'angular': {'javascript', 'typescript', 'html', 'css'},
@@ -54,50 +59,70 @@ def calculate_skill_match(resume_skills: List[str], job_skills: List[str]) -> Di
         'azure': {'cloud', 'devops'},
         'gcp': {'cloud', 'devops'},
     }
-    
-    # Direct matches
+
+    if not job_skills_set:
+        # No skills at all — score based only on keyword overlap in description
+        if description:
+            desc_lower = description.lower()
+            desc_hits = sum(1 for s in resume_skills_set if s in desc_lower)
+            desc_score = min(desc_hits / max(len(resume_skills_set), 1), 1.0) * 30
+        else:
+            desc_score = 0
+        return {
+            'match_percentage': round(desc_score, 1),
+            'direct_matches': [],
+            'related_matches': [],
+            'total_required': 0,
+            'total_matched': 0,
+        }
+
+    # ── Direct matches ──────────────────────────────────────────────────────
     direct_matches = set()
     for job_skill in job_skills_set:
         if job_skill in resume_skills_set:
             direct_matches.add(job_skill)
-        else:
-            # Check synonyms
-            for key, synonyms in skill_synonyms.items():
-                if job_skill in synonyms or job_skill == key:
-                    if key in resume_skills_set or resume_skills_set & synonyms:
-                        direct_matches.add(job_skill)
-                        break
-    
-    # Related matches (partial credit)
+            continue
+        for key, synonyms in skill_synonyms.items():
+            if (job_skill == key or job_skill in synonyms):
+                if key in resume_skills_set or resume_skills_set & synonyms:
+                    direct_matches.add(job_skill)
+                    break
+
+    # ── Related matches ─────────────────────────────────────────────────────
     related_matches = set()
     for job_skill in job_skills_set - direct_matches:
         for key, related in related_skills.items():
             if job_skill == key and resume_skills_set & related:
                 related_matches.add(job_skill)
                 break
-    
-    # Calculate match score
-    if not job_skills_set:
-        match_percentage = 0
-    else:
-        direct_score = len(direct_matches) / len(job_skills_set) * 0.6  # 60% weight
-        related_score = len(related_matches) / len(job_skills_set) * 0.2  # 20% weight
-        
-        # Experience level matching (simplified - 10% weight)
-        experience_score = 0.1  # Default partial credit
-        
-        # Industry alignment (simplified - 10% weight)
-        industry_score = 0.1 if resume_skills_set & job_skills_set else 0.05
-        
-        match_percentage = (direct_score + related_score + experience_score + industry_score) * 100
-    
+
+    # ── Score components ────────────────────────────────────────────────────
+    n = len(job_skills_set)
+
+    # Primary: skill overlap (70% weight)
+    direct_score  = (len(direct_matches)  / n) * 70
+    related_score = (len(related_matches) / n) * 15
+
+    # Secondary: title keyword bonus (10% weight)
+    title_lower = title.lower()
+    title_hits  = sum(1 for s in resume_skills_set if len(s) > 2 and s in title_lower)
+    title_score = min(title_hits * 5, 10)
+
+    # Tertiary: description keyword density (5% weight as tiebreaker)
+    desc_lower  = description.lower() if description else ''
+    desc_hits   = sum(1 for s in resume_skills_set if s in desc_lower)
+    desc_bonus  = min(desc_hits / max(len(resume_skills_set), 1), 1.0) * 5
+
+    match_percentage = direct_score + related_score + title_score + desc_bonus
+
     return {
         'match_percentage': min(round(match_percentage, 1), 100),
         'direct_matches': sorted(list(direct_matches)),
         'related_matches': sorted(list(related_matches)),
-        'total_required': len(job_skills_set),
-        'total_matched': len(direct_matches) + len(related_matches)
+        'total_required': n,
+        'total_matched': len(direct_matches) + len(related_matches),
     }
+
 
 
 def extract_skills_from_description(description: str) -> List[str]:
@@ -154,7 +179,7 @@ def rank_jobs(user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
                 'title': job['title'],
                 'company': job['company'],
                 'location': job['location'],
-                'description': job['description'][:500],  # Truncate for display
+                'description': job['description'],  # Keep full description; UI handles display truncation
                 'required_skills': job_skills,
                 'apply_link': job['url'],
                 'salary': job.get('salary', 'Not specified'),
@@ -180,7 +205,12 @@ def rank_jobs(user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
     # Calculate match for each job
     job_matches = []
     for job in all_jobs:
-        match_result = calculate_skill_match(user_skills, job.get('required_skills', []))
+        match_result = calculate_skill_match(
+            user_skills,
+            job.get('required_skills', []),
+            title=job.get('title', ''),
+            description=job.get('description', '')
+        )
         
         job_matches.append({
             'job_id': job.get('job_id', job.get('id', 0)),

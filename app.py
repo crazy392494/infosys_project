@@ -1420,7 +1420,23 @@ def show_jobs_page():
                 job_type_s = str(row.get('job_type', 'Full-time') or 'Full-time')
                 desc_raw   = str(row.get('description', '') or '')
                 desc_safe  = _html.escape(desc_raw[:400] + '…' if len(desc_raw) > 400 else desc_raw)
-                job_url    = str(row.get('job_url', '') or '')
+                job_url    = str(row.get('job_url_direct', '') or row.get('job_url', '') or '')
+                # If the URL points to a LinkedIn search/listing page instead of a specific job,
+                # extract the job ID and build a direct view URL
+                import re as _re2
+                if job_url and 'linkedin.com' in job_url:
+                    # jobspy URLs look like: https://www.linkedin.com/jobs/view/4309908618/
+                    # or search URLs like:   https://www.linkedin.com/jobs/search/?keywords=...
+                    if '/jobs/search' in job_url or '/jobs/collections' in job_url:
+                        # Try to extract a job ID from the URL or the row
+                        jid = str(row.get('id', '') or row.get('job_id', '') or '')
+                        if not jid:
+                            # Try extracting from URL params
+                            jid_match = _re2.search(r'currentJobId=(\d+)', job_url)
+                            if jid_match:
+                                jid = jid_match.group(1)
+                        if jid and jid.isdigit():
+                            job_url = f"https://www.linkedin.com/jobs/view/{jid}/"
                 posted     = row.get('date_posted', '')
                 if posted and str(posted) not in ('nan', 'None', ''):
                     try:
@@ -1488,7 +1504,9 @@ def show_jobs_page():
                             f'{_html.escape(req_text)}</p></div>',
                             unsafe_allow_html=True
                         )
-                    st.link_button("View Job on LinkedIn", job_url, type="primary")
+                    # Show the direct job URL and apply button
+                    st.link_button("Apply on LinkedIn (Specific Job)", job_url, type="primary")
+                    st.caption(f"Direct link: `{job_url}`")
 
                 st.markdown("<div style='margin-bottom:8px;'></div>", unsafe_allow_html=True)
 
